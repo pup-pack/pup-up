@@ -13,6 +13,15 @@ and this project adheres to **[Semantic Versioning](https://semver.org/spec/v2.0
 
 ---
 
+### Removed
+
+- Removed vestigial `templates` modules (`baseline`, `baseline_utils`,
+  `fetch`, `render`) now provided by `pup-core`.
+- Removed unused packaged data files `templates/data/defaults.toml`
+  and `templates/data/policy.toml`.
+
+---
+
 ## [0.2.0] - 2026-08-26
 
 ### Added

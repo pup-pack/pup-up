@@ -42,7 +42,7 @@ keywords = [
 ]
 
 dependencies = [
-    "pup-core>=0.2.0",
+    "pup-core>=0.2.0"
 ]
 
 [dependency-groups]
