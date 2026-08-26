@@ -37,6 +37,11 @@
     "editor.defaultFormatter": "redhat.vscode-yaml"
   },
 
+  // Turn off the Windows auto-activation of the Python virtual environment in the terminal.
+  // With `uv`, we want to control the environment activation ourselves,
+  // so we disable VS Code's automatic activation.
+  "python.terminal.activateEnvironment": false,
+
   "yaml.schemas": {
     "https://json.schemastore.org/github-workflow.json": [
       ".github/workflows/*.yml",

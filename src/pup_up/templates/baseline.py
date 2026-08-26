@@ -1,19 +1,26 @@
 """Baseline layer inference and managed file declarations."""
 
 from pathlib import Path
+import tomllib
 
-__all__ = ["PRESERVE_PATTERNS", "infer_layers"]
+__all__ = ["infer_layers", "load_preserve_patterns"]
 
-PRESERVE_PATTERNS: tuple[str, ...] = (
-    "README.md",
-    "artifacts/**",
-    "data/**",
-    "docs/**",
-    "notebooks/**",
-    "sql/**",
-    "src/**",
-    "tests/**",
-)
+
+def load_preserve_patterns() -> tuple[str, ...]:
+    """Load repository preserve patterns from pup-up policy data."""
+    data_path = Path(__file__).parent / "data" / "policy.toml"
+
+    with data_path.open("rb") as file:
+        data = tomllib.load(file)
+
+    patterns = data.get("preserve_patterns", [])
+
+    if not isinstance(patterns, list) or not all(
+        isinstance(pattern, str) for pattern in patterns
+    ):
+        raise ValueError(f"Invalid preserve_patterns in {data_path}")
+
+    return tuple(patterns)
 
 
 def infer_layers(*, repo_root: Path, repo_name: str, files: set[str]) -> list[str]:

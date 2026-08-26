@@ -4,14 +4,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pup_core.inspect.detect import detect_repository
+from pup_core.templates.baseline import infer_layers
+from pup_core.templates.fetch import TemplateSource, fetch_template_snapshot
 
 from pup_up.sync.plan import (
     build_update_plan,
     filter_update_plan,
     write_update_plan,
 )
-from pup_up.templates.baseline import infer_layers
-from pup_up.templates.fetch import TemplateSource, fetch_template_snapshot
 from pup_up.write.terminal import (
     print_update_diffs,
     print_update_plan,

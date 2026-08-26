@@ -4,23 +4,29 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pup_core.base.types import RepositoryContext
+from pup_core.templates.baseline import list_template_files
+from pup_core.templates.render import read_rendered_template
+from pup_core.templates.types import TemplateFile, TemplateSnapshot
 
-from pup_up.base.errors import UnsafePathError
+from pup_up.base.errors import PupUpError, UnsafePathError
 from pup_up.base.types import FileStatus, PlannedFile, UpdatePlan
-from pup_up.templates.fetch import (
-    TemplateFile,
-    TemplateSnapshot,
-    fetch_template_text,
-    list_template_files,
-)
-from pup_up.templates.render import render_template
 from pup_up.templates.zensical import preserve_zensical_navigation
 
 __all__ = [
+    "FileReadError",
+    "FileWriteError",
     "build_update_plan",
     "filter_update_plan",
     "write_update_plan",
 ]
+
+
+class FileReadError(PupUpError):
+    """Raised when a managed file cannot be read."""
+
+
+class FileWriteError(PupUpError):
+    """Raised when a managed file cannot be written."""
 
 
 def build_update_plan(
@@ -30,7 +36,21 @@ def build_update_plan(
     snapshot: TemplateSnapshot,
     protected_paths: frozenset[str] = frozenset(),
 ) -> UpdatePlan:
-    """Build an update plan from discovered template files."""
+    """Build an update plan from discovered template files.
+
+    Args:
+        target: Detected context for the target repository.
+        layers: Ordered tuple of template layers to consider.
+        snapshot: Resolved canonical template snapshot.
+        protected_paths: Repository-relative paths that must not be modified.
+
+    Returns:
+        Update plan representing the proposed changes.
+
+    Raises:
+        FileReadError: If a managed repository file cannot be read.
+        UnsafePathError: If a managed file resolves outside the repository root.
+    """
     planned_files: list[PlannedFile] = []
 
     template_files = list_template_files(
@@ -44,6 +64,7 @@ def build_update_plan(
                 target=target,
                 snapshot=snapshot,
                 template_file=template_file,
+                protected_paths=protected_paths,
             )
         )
 
@@ -100,7 +121,15 @@ def filter_update_plan(
 
 
 def write_update_plan(plan: UpdatePlan) -> None:
-    """Write changed or missing managed files."""
+    """Write changed or missing managed files.
+
+    Args:
+        plan: Update plan containing the managed files to write.
+
+    Raises:
+        FileWriteError: If a managed file cannot be created or written.
+        UnsafePathError: If a managed file resolves outside the repository root.
+    """
     for file in plan.files:
         if file.status not in {"changed", "missing"}:
             continue
@@ -109,8 +138,14 @@ def write_update_plan(plan: UpdatePlan) -> None:
             continue
 
         target_path = _safe_target_path(plan.target.root, file.path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(file.desired_text, encoding="utf-8")
+
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(file.desired_text, encoding="utf-8")
+        except OSError as exc:
+            raise FileWriteError(
+                f"Could not write managed file: {target_path}"
+            ) from exc
 
 
 def _plan_one_template_file(
@@ -118,28 +153,41 @@ def _plan_one_template_file(
     target: RepositoryContext,
     snapshot: TemplateSnapshot,
     template_file: TemplateFile,
+    protected_paths: frozenset[str],
 ) -> PlannedFile:
-    """Plan one discovered template file."""
-    template_text = fetch_template_text(
+    """Plan one discovered template file.
+
+    Args:
+        target: Detected context for the target repository.
+        snapshot: Resolved canonical template snapshot.
+        template_file: Effective template file to plan.
+        protected_paths: Repository-relative paths that must not be modified.
+
+    Returns:
+        Planned file state for the effective template file.
+
+    Raises:
+        FileReadError: If the current managed file cannot be read.
+        UnsafePathError: If the managed file resolves outside the repository root.
+    """
+    desired_text = read_rendered_template(
         snapshot=snapshot,
         template_file=template_file,
+        repository=target,
     )
 
-    if template_text is None:
-        return PlannedFile(
-            path=Path(template_file.target_path),
-            status="no-template",
-            source_layer=template_file.layer,
-            source_path=f"{template_file.layer}/{template_file.template_path}",
-            current_text=_read_current_text(
-                target.root, Path(template_file.target_path)
-            ),
-            desired_text=None,
-        )
-
-    desired_text = render_template(template_text, target)
     relative_path = Path(template_file.target_path)
     current_text = _read_current_text(target.root, relative_path)
+
+    if relative_path.as_posix() in protected_paths:
+        return PlannedFile(
+            path=relative_path,
+            status="protected",
+            source_layer=template_file.layer,
+            source_path=f"{template_file.layer}/{template_file.template_path}",
+            current_text=current_text,
+            desired_text=desired_text,
+        )
 
     if relative_path == Path("zensical.toml") and current_text is not None:
         desired_text = preserve_zensical_navigation(
@@ -178,7 +226,20 @@ def _file_status(
 
 
 def _read_current_text(root: Path, path: Path) -> str | None:
-    """Read current file text if present."""
+    """Read current managed file text if present.
+
+    Args:
+        root: Repository root.
+        path: Repository-relative managed file path.
+
+    Returns:
+        UTF-8 file text, or None if the path does not exist, is a directory,
+        or contains non-UTF-8 content.
+
+    Raises:
+        FileReadError: If the file exists but cannot otherwise be read.
+        UnsafePathError: If the path resolves outside the repository root.
+    """
     target_path = _safe_target_path(root, path)
 
     if not target_path.exists() or target_path.is_dir():
@@ -188,10 +249,23 @@ def _read_current_text(root: Path, path: Path) -> str | None:
         return target_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return None
+    except OSError as exc:
+        raise FileReadError(f"Could not read managed file: {target_path}") from exc
 
 
 def _safe_target_path(root: Path, path: Path) -> Path:
-    """Resolve a path under the repository root."""
+    """Resolve a path safely under the repository root.
+
+    Args:
+        root: Repository root.
+        path: Repository-relative path to resolve.
+
+    Returns:
+        Resolved path beneath the repository root.
+
+    Raises:
+        UnsafePathError: If the resolved path escapes the repository root.
+    """
     target_path = (root / path).resolve()
     root_resolved = root.resolve()
 

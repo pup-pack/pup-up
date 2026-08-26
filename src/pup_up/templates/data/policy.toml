@@ -1,0 +1,13 @@
+# src/pup_up/data/policy.toml
+
+# Repository-specific surfaces preserved.
+preserve_patterns = [
+    "README.md",
+    "artifacts/**",
+    "data/**",
+    "docs/**",
+    "notebooks/**",
+    "sql/**",
+    "src/**",
+    "tests/**",
+]

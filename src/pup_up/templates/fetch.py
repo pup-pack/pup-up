@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import tarfile
 from tempfile import TemporaryDirectory
+import tomllib
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
@@ -48,12 +49,19 @@ __all__ = [
     "fetch_template_snapshot",
     "fetch_template_text",
     "list_template_files",
+    "load_preserve_patterns",
 ]
 
 
 @dataclass(frozen=True)
 class TemplateFile:
-    """One file discovered in a template layer."""
+    """Describe one managed file discovered in a template layer.
+
+    Attributes:
+        layer: Template layer that supplies the effective file.
+        template_path: Path to the source file relative to the template layer.
+        target_path: Repository-relative path where the file applies.
+    """
 
     layer: str
     template_path: str
@@ -62,11 +70,17 @@ class TemplateFile:
 
 @dataclass(frozen=True)
 class TemplateSnapshot:
-    """Resolved template tree read from one local root.
+    """Describe one resolved local snapshot of the template repository.
 
-    A snapshot is the single source everything reads from during a run. It is
-    produced once by ``fetch_template_snapshot`` and points at either an
-    extracted archive or an explicit local templates path.
+    A snapshot provides a stable local source for all template operations
+    performed during a run. Remote sources are resolved to an immutable commit
+    before being downloaded.
+
+    Attributes:
+        root: Local root directory containing the resolved template tree.
+        repository: GitHub owner/repository identifying the template source.
+        ref: Resolved Git reference. Remote snapshots use the immutable commit SHA.
+        from_local: Whether the snapshot came from an explicitly supplied local path.
     """
 
     root: Path
@@ -77,7 +91,13 @@ class TemplateSnapshot:
 
 @dataclass(frozen=True)
 class TemplateSource:
-    """Canonical template source."""
+    """Describe the canonical source from which templates should be resolved.
+
+    Attributes:
+        repository: GitHub owner/repository containing the templates.
+        ref: Git branch, tag, or commit to resolve.
+        local_path: Optional local template repository path that bypasses downloading.
+    """
 
     repository: str = "pup-pack/templates"
     ref: str = "main"
@@ -86,21 +106,22 @@ class TemplateSource:
 
 @contextmanager
 def fetch_template_snapshot(*, source: TemplateSource) -> Iterator[TemplateSnapshot]:
-    """Resolve a template source to a single local snapshot for the run.
+    """Resolve a template source to one stable local snapshot.
 
-    If ``source.local_path`` is set, the snapshot wraps that path directly and
-    nothing is downloaded. Otherwise the template repository archive is fetched
-    once for ``source.ref`` and extracted to a temporary directory that is
-    removed when the context exits.
+    A local source is used directly. A remote source is first resolved to an
+    immutable commit SHA, downloaded as a GitHub archive, and extracted into a
+    temporary directory that remains available for the duration of the context.
 
     Args:
-        source: Template source.
+        source: Template repository, Git reference, and optional local path.
 
     Yields:
-        A snapshot rooted at a local template tree.
+        Resolved local template snapshot.
 
     Raises:
-        TemplateFetchError: If the archive cannot be downloaded or extracted.
+        TemplateFetchError: If a remote reference cannot be resolved, the archive
+            cannot be downloaded or extracted, or the extracted snapshot has an
+            invalid directory structure.
     """
     if source.local_path is not None:
         yield TemplateSnapshot(
@@ -130,21 +151,18 @@ def fetch_template_text(
     snapshot: TemplateSnapshot,
     template_file: TemplateFile,
 ) -> str | None:
-    """Read one template file from the snapshot.
-
-    The file's real ``template_path`` was already resolved by
-    ``list_template_files``, so this is a direct local read with no suffix
-    guessing.
+    """Read one UTF-8 template file from a resolved snapshot.
 
     Args:
-        snapshot: Resolved template snapshot.
-        template_file: Discovered template file to read.
+        snapshot: Resolved local template snapshot.
+        template_file: Effective template file to read.
 
     Returns:
-        File text, or None if the template file does not exist.
+        Template text, or None if the referenced path does not exist or is not
+        a regular file.
 
     Raises:
-        TemplateFetchError: If the file exists but cannot be read.
+        TemplateFetchError: If the template file exists but cannot be read.
     """
     path = snapshot.root / template_file.layer / template_file.template_path
 
@@ -162,9 +180,17 @@ def list_template_files(
     snapshot: TemplateSnapshot,
     layers: list[str],
 ) -> list[TemplateFile]:
-    """List managed template files for selected layers.
+    """Return the effective managed files supplied by selected template layers.
 
-    Later layers override earlier layers by target path.
+    Layers are processed in order. When multiple layers provide the same target
+    path, the later and more specific layer supersedes the earlier one.
+
+    Args:
+        snapshot: Resolved local template snapshot.
+        layers: Ordered template layers to inspect.
+
+    Returns:
+        Effective managed template files after layer overrides are applied.
     """
     discovered = _list_template_files(root=snapshot.root, layers=layers)
 
@@ -175,13 +201,65 @@ def list_template_files(
     return list(by_target.values())
 
 
+def load_preserve_patterns(*, snapshot: TemplateSnapshot) -> tuple[str, ...]:
+    """Load repository-preservation patterns from template policy.
+
+    Args:
+        snapshot: Resolved local template snapshot containing policy.toml.
+
+    Returns:
+        Repository-relative glob patterns identifying surfaces that should be
+        preserved. Returns an empty tuple when policy.toml is absent.
+
+    Raises:
+        TemplateFetchError: If policy.toml cannot be read or parsed, or if
+            preserve_patterns is not an array containing only strings.
+    """
+    path = snapshot.root / "policy.toml"
+
+    if not path.is_file():
+        return ()
+
+    try:
+        with path.open("rb") as file:
+            data = tomllib.load(file)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise TemplateFetchError(
+            f"Could not read template configuration: {path}"
+        ) from exc
+
+    patterns = data.get("preserve_patterns", [])
+
+    if not isinstance(patterns, list):
+        raise TemplateFetchError(f"preserve_patterns must be a TOML array: {path}")
+
+    if not all(isinstance(pattern, str) for pattern in patterns):
+        raise TemplateFetchError(f"preserve_patterns must contain only strings: {path}")
+
+    return tuple(patterns)
+
+
 def _download_and_extract_snapshot(
     *,
     repository: str,
     ref: str,
     dest: Path,
 ) -> tuple[Path, str]:
-    """Download and extract the template repository archive once, by commit SHA."""
+    """Resolve, download, and extract one immutable template snapshot.
+
+    Args:
+        repository: GitHub owner/repository containing the templates.
+        ref: Branch, tag, or commit identifying the requested snapshot.
+        dest: Directory into which the archive should be extracted.
+
+    Returns:
+        Tuple containing the extracted snapshot root and resolved commit SHA.
+
+    Raises:
+        TemplateFetchError: If the reference cannot be resolved, the archive
+            cannot be downloaded or extracted, or the resulting archive layout
+            is invalid.
+    """
     commit = _resolve_ref_to_commit(repository=repository, ref=ref)
     url = f"https://codeload.github.com/{repository}/tar.gz/{commit}"
 
@@ -197,7 +275,18 @@ def _download_and_extract_snapshot(
 
 
 def _fetch_archive_bytes(url: str) -> bytes:
-    """Fetch archive bytes from a trusted GitHub archive host."""
+    """Download a template archive from the trusted GitHub archive host.
+
+    Args:
+        url: HTTPS codeload.github.com archive URL.
+
+    Returns:
+        Downloaded archive bytes.
+
+    Raises:
+        TemplateFetchError: If the URL is not HTTPS, does not use the trusted
+            GitHub archive host, or cannot be downloaded.
+    """
     parsed = urlparse(url)
 
     if parsed.scheme != "https":
@@ -206,7 +295,7 @@ def _fetch_archive_bytes(url: str) -> bytes:
     if parsed.netloc != "codeload.github.com":
         raise TemplateFetchError(f"Invalid template host: {url}")
 
-    request = Request(  # noqa: S310
+    request = Request(
         url,
         headers={
             "User-Agent": "pup-up",
@@ -214,7 +303,7 @@ def _fetch_archive_bytes(url: str) -> bytes:
     )
 
     try:
-        with urlopen(request, timeout=60) as response:  # noqa: S310
+        with urlopen(request, timeout=60) as response:
             return response.read()
     except HTTPError as exc:
         raise TemplateFetchError(
@@ -231,7 +320,15 @@ def _list_template_files(
     root: Path,
     layers: list[str],
 ) -> list[TemplateFile]:
-    """List template files from a local template tree."""
+    """Discover template files from ordered layers in a local template tree.
+
+    Args:
+        root: Local template repository root.
+        layers: Ordered template layers to inspect.
+
+    Returns:
+        Discovered template files before target-path overrides are resolved.
+    """
     resolved_root = root.expanduser().resolve()
     items: list[TemplateFile] = []
 
@@ -260,12 +357,21 @@ def _list_template_files(
 
 
 def _resolve_ref_to_commit(*, repository: str, ref: str) -> str:
-    """Resolve a branch/tag ref to its immutable commit SHA.
+    """Resolve a GitHub branch or tag to an immutable full commit SHA.
 
-    Downloading an archive by branch name returns GitHub's cached tarball for
-    that ref, which can lag a recent push by minutes. Resolving to the commit
-    SHA and downloading that archive bypasses the stale branch cache and pins
-    the run to an exact template commit.
+    A full 40-character lowercase SHA is returned unchanged. Other references
+    are resolved through the GitHub commits API.
+
+    Args:
+        repository: GitHub owner/repository containing the templates.
+        ref: Branch, tag, or full commit SHA.
+
+    Returns:
+        Full lowercase 40-character commit SHA.
+
+    Raises:
+        TemplateFetchError: If the reference cannot be resolved or GitHub
+            returns an invalid commit SHA.
     """
     if _SHA_RE.match(ref):
         return ref
@@ -281,9 +387,9 @@ def _resolve_ref_to_commit(*, repository: str, ref: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    request = Request(api_url, headers=headers)  # noqa: S310
+    request = Request(api_url, headers=headers)
     try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310
+        with urlopen(request, timeout=30) as response:
             sha = response.read().decode("utf-8").strip()
     except HTTPError as exc:
         raise TemplateFetchError(f"Could not resolve template ref: {api_url}") from exc
@@ -311,7 +417,19 @@ def _should_skip_template_path(path: str) -> bool:
 
 
 def _snapshot_root(*, dest: Path, url: str) -> Path:
-    """Return the single top-level directory GitHub archives wrap content in."""
+    """Return the single root directory extracted from a GitHub archive.
+
+    Args:
+        dest: Directory containing the extracted archive.
+        url: Source archive URL used for diagnostic messages.
+
+    Returns:
+        Single extracted top-level directory.
+
+    Raises:
+        TemplateFetchError: If extraction does not produce exactly one
+            top-level directory.
+    """
     directories = [entry for entry in dest.iterdir() if entry.is_dir()]
 
     if len(directories) != 1:

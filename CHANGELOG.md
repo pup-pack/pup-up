@@ -13,6 +13,26 @@ and this project adheres to **[Semantic Versioning](https://semver.org/spec/v2.0
 
 ---
 
+## [0.2.0] - 2026-08-26
+
+### Added
+
+- Support for additive template layers including `ALL-PY-SRC-PYPI`.
+- Protected-path handling for managed repository files.
+- Stable file read and write errors for managed-file operations.
+- Repository preservation policy loaded from packaged configuration.
+- Zensical navigation preservation during managed template updates.
+
+### Changed
+
+- Updated template handling to use the shared canonical template snapshot,
+  file discovery, and rendering APIs.
+- Simplified `pup-up` tests to focus on command and update behavior.
+- Updated default template synchronization behavior for the current
+  `pup-pack/templates` repository.
+
+---
+
 ## [0.1.4] - 2026-08-15
 
 ### Fixed
@@ -144,6 +164,7 @@ Follow these steps when creating a new release.
 
 ```shell
 uv self update
+
 uv python install
 uv lock --upgrade
 uv sync
@@ -174,7 +195,7 @@ uvx twine check dist/*
 git add -A
 git commit -m "Prepare X.Y.Z"
 git push -u origin main
-````
+```
 
 Verify actions run on GitHub. After success:
 
@@ -192,7 +213,8 @@ git push origin :refs/tags/vX.Z.Y
 
 ## Links
 
-[Unreleased]: https://github.com/pup-pack/pup-up/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/pup-pack/pup-up/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pup-pack/pup-up/releases/tag/v0.2.0
 [0.1.4]: https://github.com/pup-pack/pup-up/releases/tag/v0.1.4
 [0.1.3]: https://github.com/pup-pack/pup-up/releases/tag/v0.1.3
 [0.1.1]: https://github.com/pup-pack/pup-up/releases/tag/v0.1.1

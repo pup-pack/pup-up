@@ -1,6 +1,6 @@
 # pup-up
 
-<img src="images/pup.png" alt="pup-clean logo" width="110">
+<img src="images/pup.png" alt="pup-pack logo" width="110">
 
 `pup-up` brings a Python repository up to a managed professional baseline.
 
@@ -42,11 +42,12 @@ the areas that require human judgment.
 Templates are applied as ordered layers.
 Later layers may override files from earlier layers.
 
-The standard layer model replaces as specificity increases:
+The standard layer model increases in specificity:
 
 - `ALL` for files shared by all repositories.
 - `ALL-PY` for Python repository tooling.
 - `ALL-PY-SRC` for Python repositories with a `src/` package layout.
+- `ALL-PY-SRC-PYPI` for publishable Python `src/` package repositories.
 
 Layers are additive across managed files while allowing a more specific
 layer to supersede an earlier version of the same file.

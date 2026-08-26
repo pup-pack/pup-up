@@ -24,7 +24,15 @@ def preserve_zensical_navigation(
     existing_text: str,
     rendered_text: str,
 ) -> str:
-    """Preserve existing Zensical navigation when present."""
+    """Preserve existing Zensical navigation when present.
+
+    Args:
+        existing_text: Current content of the project file.
+        rendered_text: Newly rendered template content.
+
+    Returns:
+        Combined template content with existing navigation preserved when present.
+    """
     existing_match = NAV_PATTERN.search(existing_text)
 
     # No existing navigation: use the rendered template exactly as-is.

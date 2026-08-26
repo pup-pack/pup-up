@@ -5,7 +5,7 @@ from pathlib import Path
 import tomllib
 from typing import BinaryIO, cast
 
-__all__ = ["looks_like_pypi_package", "load_package_defaults"]
+__all__ = ["load_package_defaults", "looks_like_pypi_package"]
 
 TomlTable = dict[str, object]
 
